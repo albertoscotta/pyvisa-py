@@ -248,7 +248,7 @@ class Client(object):
         # ITECH IT8000 are bogus
         if proc == 12 and reply:
             # vxi11.DEVICE_READ
-            return reply
+            return 0, 4, reply
 
         if pack_func is None and args is not None:
             raise TypeError('non-null args with null pack_func')
@@ -335,7 +335,7 @@ def _get_record_with_reply(buffer):
 
     # get possible reply
     for i in range(len(buffer)):
-        if buffer[i] == "\n":
+        if buffer[i] == ord("\n"):
             # store possible reply
             pos_reply = buffer[:i]
             # drop the reply
@@ -405,10 +405,8 @@ def _recvrecord(sock, timeout, read_fun=None):
             buffer.extend(read_data)
         # Timeout was reached
         elif timeout is not None and time.time() >= finish_time:
-            logger.debug(('Time out encountered in %s.'
-                          'Already receieved %d bytes. Last fragment is %d '
-                          'bytes long and we were expecting %d'),
-                         sock, len(record), len(buffer), exp_length)
+            logger.debug(('Time out encountered in %s.'),
+                         sock)
             msg = ("socket.timeout: The instrument seems to have stopped "
                    "responding.")
             raise socket.timeout(msg)
