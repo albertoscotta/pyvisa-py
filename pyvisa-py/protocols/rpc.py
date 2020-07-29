@@ -244,6 +244,12 @@ class Client(object):
         logger.debug('Make call %r, %r, %r, %r',
                      proc, args, pack_func, unpack_func)
 
+        global reply
+        # ITECH IT8000 are bogus
+        if proc == 12 and reply:
+            # vxi11.DEVICE_READ
+            return reply
+
         if pack_func is None and args is not None:
             raise TypeError('non-null args with null pack_func')
         self.start_call(proc)
@@ -322,17 +328,60 @@ def _sendrecord(sock, record, fragsize=None, timeout=None):
         sock.send(header + record[:fragsize])
         record = record[fragsize:]
 
+def _get_record_with_reply(buffer):
+    global reply
+    reply = None
+    pos_reply = None
+
+    # get possible reply
+    for i in range(len(buffer)):
+        if buffer[i] == "\n":
+            # store possible reply
+            pos_reply = buffer[:i]
+            # drop the reply
+            buffer = buffer[i+1:]
+            break
+    if pos_reply:
+        record = _get_record_no_reply(buffer)
+        if record:
+            # place possible reply in actual reply
+            reply = pos_reply
+            return record
+    return None
+
+def _get_record_no_reply(buffer):
+    record = bytearray()
+    header_length = 4
+
+    while len(buffer) >= header_length:
+        header = buffer[:header_length]
+        buffer = buffer[header_length:]
+        x = struct.unpack(">I", header)[0]
+        last = ((x & 0x80000000) != 0)
+        exp_length = int(x & 0x7fffffff)
+        if len(buffer) >= exp_length:
+            record.extend(buffer[:exp_length])
+            buffer = buffer[exp_length:]
+            if last:
+                return bytes(record)
+    return None
+
+def _get_record(buffer):
+    record = _get_record_no_reply(buffer)
+    if record:
+        return record
+    record = _get_record_with_reply(buffer)
+    if record:
+        return record
+    return None
 
 def _recvrecord(sock, timeout, read_fun=None):
 
-    record = bytearray()
     buffer = bytearray()
     if not read_fun:
         read_fun = sock.recv
 
-    wait_header = True
-    last = False
-    exp_length = 4
+    read_buffer = 2 # read 2 characters at the time
 
     # minimum is in interval 1 - 100ms based on timeout or for infinite it is
     # 1 sec
@@ -349,48 +398,31 @@ def _recvrecord(sock, timeout, read_fun=None):
 
         # if more data for the current fragment is needed, use select
         # to wait for read ready, max `select_timout` seconds
-        if len(buffer) < exp_length:
-            r, w, x = select.select([sock], [], [], select_timout)
-            read_data = b''
-            if sock in r:
-                read_data = read_fun(exp_length)
-                buffer.extend(read_data)
-            # Timeout was reached
-            elif timeout is not None and time.time() >= finish_time:
-                logger.debug(('Time out encountered in %s.'
-                              'Already receieved %d bytes. Last fragment is %d '
-                              'bytes long and we were expecting %d'),
-                             sock, len(record), len(buffer), exp_length)
-                msg = ("socket.timeout: The instrument seems to have stopped "
-                       "responding.")
-                raise socket.timeout(msg)
-            else:
-                # `select_timout` decreased to 50% of previous or
-                # min_select_timeout
-                select_timout = max(select_timout/2.0, min_select_timeout)
-                continue
-
-        if wait_header:
-            # need to find header
-            if len(buffer) >= exp_length:
-                header = buffer[:exp_length]
-                buffer = buffer[exp_length:]
-                x = struct.unpack(">I", header)[0]
-                last = ((x & 0x80000000) != 0)
-                exp_length = int(x & 0x7fffffff)
-                wait_header = False
+        r, w, x = select.select([sock], [], [], select_timout)
+        read_data = b''
+        if sock in r:
+            read_data = read_fun(read_buffer)
+            buffer.extend(read_data)
+        # Timeout was reached
+        elif timeout is not None and time.time() >= finish_time:
+            logger.debug(('Time out encountered in %s.'
+                          'Already receieved %d bytes. Last fragment is %d '
+                          'bytes long and we were expecting %d'),
+                         sock, len(record), len(buffer), exp_length)
+            msg = ("socket.timeout: The instrument seems to have stopped "
+                   "responding.")
+            raise socket.timeout(msg)
         else:
-            if len(buffer) >= exp_length:
-                record.extend(buffer[:exp_length])
-                buffer = buffer[exp_length:]
-                if last:
-                    logger.debug('Received record through %s: %r',
-                                 sock, record)
-                    return bytes(record)
-                else:
-                    wait_header = True
-                    exp_length = 4
+            # `select_timout` decreased to 50% of previous or
+            # min_select_timeout
+            select_timout = max(select_timout/2.0, min_select_timeout)
+            continue
 
+        record = _get_record(buffer)
+        if record:
+            logger.debug('Received record through %s: %r',
+                         sock, record)
+            return bytes(record)
 
 def _connect(sock, host, port, timeout=0):
     try:
