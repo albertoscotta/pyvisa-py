@@ -367,10 +367,10 @@ def _get_record_no_reply(buffer):
     return None
 
 def _get_record(buffer):
-    record = _get_record_no_reply(buffer)
+    record = _get_record_with_reply(buffer)
     if record:
         return record
-    record = _get_record_with_reply(buffer)
+    record = _get_record_no_reply(buffer)
     if record:
         return record
     return None
